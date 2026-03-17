@@ -1,0 +1,7 @@
+/* SillyTavern-SmartImport/style.css */
+
+#external_import_button, .external_import_button {
+    background-color: var(--SmartThemeBotColor, #1a73e8) !important;
+    color: var(--SmartThemeBotTxtColor, #ffffff) !important;
+    border: none !important;
+}
