@@ -1,4 +1,4 @@
-# 📦 SillyTavern Smart Import (v1.0.0)
+# ⬇️ SillyTavern Smart Import ⏬
 
 A robust, batch-processing frontend extension for SillyTavern that intelligently prevents duplicate character creation during external imports. Built to intercept the native import process, scan your local database using bidirectional metadata matching, and force a seamless *update* to existing characters instead of spawning clones.
 
