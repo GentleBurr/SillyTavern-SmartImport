@@ -1,236 +1,386 @@
 /* SillyTavern-SmartImport/index.js */
 
-let utilsModule = null;
-let isSmartImporting = false;
+// MODULE CONSTANTS
+const MODULE_NAME = 'st_smart_import_extension';
+const FOLDER_NAME = 'third-party/SillyTavern-SmartImport';
+
+// REGEX DEFINITIONS
+const REGEX_PROTOCOL = /^https?:\/\//i;
+const REGEX_WWW = /^www\./i;
+const REGEX_TRAILING_SLASH = /\/$/;
+const REGEX_NON_ALPHANUMERIC = /[^a-z0-9]/gi;
 
 // INPUT NORMALIZER
-function normalizeUrl(urlStr) {
-    if (!urlStr) return '';
+const normalizeUrl = (urlStr) => {
     // STRIP PROTOCOL, WWW, AND TRAILING SLASHES
-    return urlStr.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/$/, '').toLowerCase();
+    return typeof urlStr === 'string'
+        ? urlStr.replace(REGEX_PROTOCOL, '').replace(REGEX_WWW, '').replace(REGEX_TRAILING_SLASH, '').toLowerCase()
+        : '';
+};
+
+// GLOBAL STATE
+let isSmartImporting = false;
+
+// DEFAULT SETTINGS
+const defaultSettings = Object.freeze({
+    enabled: true,
+    delayMs: 500
+});
+
+// LOAD PERSISTENT SETTINGS
+function loadSettings() {
+    const { extensionSettings } = SillyTavern.getContext();
+    extensionSettings[MODULE_NAME] = SillyTavern.libs.lodash.merge(
+        structuredClone(defaultSettings),
+        extensionSettings[MODULE_NAME]
+    );
 }
 
-jQuery(async () => {
+// RETRIEVE CURRENT SETTINGS
+function getSettings() {
+    const { extensionSettings } = SillyTavern.getContext();
+    return extensionSettings[MODULE_NAME];
+}
+
+// RENDER SETTINGS UI
+async function renderSettings() {
+    const { renderExtensionTemplateAsync, saveSettingsDebounced } = SillyTavern.getContext();
+    const settings = getSettings();
+    const settingsHtml = await renderExtensionTemplateAsync(
+        FOLDER_NAME,
+        'settings',
+        settings
+    );
+
+    $('#extensions_settings2').append(settingsHtml);
+
+    // TOGGLE ENABLE LISTENER
+    $('#smart_import_enabled').on('change', function () {
+        settings.enabled = !!$(this).prop('checked');
+        saveSettingsDebounced();
+        updateVisualState(settings.enabled);
+    });
+
+    // DELAY INPUT LISTENER
+    $('#smart_import_delay').on('input', function () {
+        let val = parseInt($(this).val());
+        if (isNaN(val)) val = 500;
+        settings.delayMs = Math.min(Math.max(val, 0), 5000);
+        saveSettingsDebounced();
+    });
+
+    // DELAY BLUR ENFORCER
+    $('#smart_import_delay').on('blur', function () {
+        let val = parseInt($(this).val());
+        if (isNaN(val) || $(this).val().trim() === '') {
+            val = 500;
+        }
+
+        val = Math.min(Math.max(val, 0), 5000);
+
+        $(this).val(val);
+
+        settings.delayMs = val;
+        saveSettingsDebounced();
+    });
+}
+
+// EXTENSION ACTIVATION HOOK
+export async function onActivate() {
+    loadSettings();
+
+    await renderSettings();
+
+    updateVisualState(getSettings().enabled);
+
     // DYNAMIC BUTTON RENAMING
-    $(document).on('click', '#external_import_button, .external_import_button', function() {
+    $(document).on('click.smartImportRename', '#external_import_button, .external_import_button', function() {
+        if (!getSettings().enabled) return;
+
         // DELAY TO LET DOM RENDER
         setTimeout(() => {
             const $popup = $('.popup, #dialogue_popup, dialog').filter(':visible');
             const $importBtn = $popup.find('#dialogue_popup_ok, button, .menu_button').filter(function() {
-                const text = $(this).text().trim().toLowerCase();
-                return text === 'import';
+                return $(this).text().trim().toLowerCase() === 'import';
             });
             if ($importBtn.length) $importBtn.text('Smart Import');
         }, 100);
     });
 
-    // BUTTON INTERCEPTION OF ST NATIVE EVENT
-    document.addEventListener('click', async function(e) {
-        // FIND TARGET BUTTON
-        const $targetBtn = $(e.target).closest('button, .menu_button, #dialogue_popup_ok');
-        if (!$targetBtn.length) return;
-        // NORMALIZE BUTTON TEXT
-        const currentText = $targetBtn.text().trim().toLowerCase();
-        // IGNORE UNRELATED BUTTONS
-        if (currentText !== 'smart import' && currentText !== 'processing...') return;
+    document.addEventListener('click', handleSmartImportClick, true);
+}
 
-        // DOUBLE-LOCK GUARD
-        if (isSmartImporting || currentText === 'processing...') {
-            e.preventDefault();
-            e.stopPropagation();
-            e.stopImmediatePropagation();
-            return;
-        }
+// EXTENSION DEACTIVATION HOOK
+export function onDisable() {
+    $(document).off('click.smartImportRename');
+    document.removeEventListener('click', handleSmartImportClick, true);
+    $('.smart-import-settings').remove();
 
-        // FIND VISIBLE POPUP
-        const $popup = $targetBtn.closest('.popup, #dialogue_popup, dialog');
-        if (!$popup.length || !$popup.is(':visible')) return;
-        // FIND INPUT FIELD
-        const $input = $popup.find('textarea, input[type="text"]').filter(':visible').first();
-        if (!$input.length) return; 
-        // VALIDATE INPUT CONTENT
-        const inputVal = $input.val();
-        if (!inputVal || inputVal.trim() === '') return;
-        // NEWLINE SPLITTING
-         const urls = inputVal.split(/\r?\n/).map(u => u.trim()).filter(u => u !== '');
+    updateVisualState(false);
+}
 
-        // LOCK SECURED
-        isSmartImporting = true;
-        // KILL NATIVE ST EVENT
+// TOGGLE CSS THEME STATE
+function updateVisualState(isEnabled) {
+    $('body').toggleClass('smart-import-active', isEnabled);
+}
+
+// LOAD CHARACTERS
+function buildCharacterCache(characters) {
+    return characters.map(c => {
+        const exts = c.data?.extensions || {};
+        const identifiers = [
+            exts.source_url, exts.source,
+            exts.chub?.full_path ? `chub.ai/characters/${exts.chub.full_path}` : '',
+            exts.chub?.id, exts.pygmalion_id, exts.pygmalion?.id,
+            exts.aicc, exts.aicc?.id, exts.perchance_data?.slug
+        ].map(id => {
+            if (!id || typeof id !== 'string') return '';
+            return normalizeUrl(id);
+        }).filter(id => id.length > 0);
+
+        return {
+            original: c,
+            cleanName: c.name ? c.name.replace(REGEX_NON_ALPHANUMERIC, '').toLowerCase() : '',
+            identifiers,
+            isAiccCard: !!exts.aicc || JSON.stringify(c).toLowerCase().includes('aicharactercards') || JSON.stringify(c).toLowerCase().includes('"source":"aicc"')
+        };
+    });
+}
+
+// CORE LOGIC
+async function handleSmartImportClick(e) {
+    const settings = getSettings();
+    if (!settings.enabled) return;
+
+    // FIND TARGET BUTTON
+    const $targetBtn = $(e.target).closest('button, .menu_button, #dialogue_popup_ok');
+    if (!$targetBtn.length) return;
+    // NORMALIZE BUTTON TEXT
+    const currentText = $targetBtn.text().trim().toLowerCase();
+    // IGNORE UNRELATED BUTTONS
+    if (currentText !== 'smart import' && currentText !== 'processing...') return;
+
+    // DOUBLE-LOCK GUARD
+    if (isSmartImporting || currentText === 'processing...') {
         e.preventDefault();
-        e.stopPropagation();
         e.stopImmediatePropagation();
-        console.log("[Smart Import] Intercepted! Taking full ownership...");
+        return;
+    }
 
-        // ISOLATED EXECUTION BLOCK FOR SUCCESSFUL RELEASE
-        try {
-            // TACTILE UX BUTTON PAUSE
-            $targetBtn.text("Processing...");
-            $targetBtn.prop('disabled', true).css({ opacity: "0.5" });
-            // BUFFER TO ABSORB MOBILE GHOST CLICKS
-            await new Promise(resolve => setTimeout(resolve, 300));
-            // CLEAR INPUT AND CANCEL POPUP
-            $input.blur();
-            $input.val(''); 
-            const cancelBtn = $popup.find('#dialogue_popup_cancel, .cancel_button, .cancel')[0];
-            if (cancelBtn) {
-                cancelBtn.click();
-            } else if (typeof $popup[0].close === 'function') {
-                $popup[0].close();
-            } else {
-                $popup.hide();
-            }
+    // FIND VISIBLE POPUP
+    const $popup = $targetBtn.closest('.popup, #dialogue_popup, dialog');
+    if (!$popup.length || !$popup.is(':visible')) return;
+    // FIND INPUT FIELD
+    const $input = $popup.find('textarea, input[type="text"]').filter(':visible').first();
+    // VALIDATE INPUT CONTENT
+    const inputVal = $input.val();
 
-            // RALPH SACRIFICE TOASTR
-            window.toastr.warning("(chuckles) I'm in danger.", "Ralph", { timeOut: 500 });
-            // INITIAL PROCESSING TOASTR
-            if (urls.length > 1) {
-                window.toastr.info(`Processing ${urls.length} imports in the background...`, 'Smart Import');
-            } else {
-                window.toastr.info('Processing import...', 'Smart Import');
-            }
-            // READING BUFFER FOR PROCESSING
-            await new Promise(resolve => setTimeout(resolve, 1000));
+    if (typeof inputVal !== 'string' || inputVal.trim() === '') return;
 
-            // LOAD ST CONTEXT
-            if (!utilsModule) utilsModule = await import('/scripts/utils.js');
-            const { characters } = SillyTavern.getContext();
-            // MAIN IMPORT LOOP
-            for (let url of urls) {
-                try {
-                    // ASSASSINATE ALL ACCIDENTAL SPACES
-                    url = url.replace(/\s+/g, '');
-                    // STRIP TRACKING PARAMETERS FOR CHUB
-                    if (url.toLowerCase().includes('chub.ai') && url.includes('?')) url = url.split('?')[0];
-                    // DEFINE FINAL LOWERCASE URL FOR FIREWALLS
-                    const lowerUrl = url.toLowerCase();
+    const { DOMPurify } = SillyTavern.libs;
 
-                    // UNSUPPORTED DUPLICATE
-                    if (lowerUrl.includes('.png')) {
-                        console.warn(`[Smart Import] Skipped PNG to prevent blind duplication: ${url}`);
-                        window.toastr.warning(`PNGs cannot be duplicate-checked. Deactivate Smart Import to batch-import PNGs natively.`, 'Smart Import Blocked', { timeOut: 5000 });
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                        continue;
-                    }
+    // SPLIT AND SANITIZE URLS
+    const cleanInput = DOMPurify.sanitize(inputVal);
+    const urls = cleanInput.split(/\r?\n/).map(u => u.trim()).filter(Boolean);
 
-                    // BROKEN APIs FIREWALL
-                    if (lowerUrl.includes('janitorai.com') || lowerUrl.includes('_character-') || lowerUrl.includes('realm.risuai.net')) {
-                        console.warn(`[Smart Import] Skipped unsupported source: ${url}`);
-                        const displayUrl = url.length > 30 ? url.substring(0, 30) + '...' : url;
-                        window.toastr.warning(`SillyTavern native import fails. Skipped to prevent errors: ${displayUrl}`, 'Smart Import Blocked', { timeOut: 5000 });
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                        continue;
-                    }
+    // LOCK SECURED
+    isSmartImporting = true;
+    // KILL NATIVE ST EVENT
+    e.preventDefault();
+    e.stopImmediatePropagation();
 
-                    // CHUB LOREBOOK SHORT-ID FIX
-                    if (url.toLowerCase().startsWith('lorebooks/')) {
-                        url = `https://chub.ai/${url}`;
-                        console.log(`[Smart Import] Expanded short Lorebook ID to full URL: ${url}`);
-                    }
+    // API COMPATIBILITY CHECK
+    const context = SillyTavern.getContext();
+    if (!context.importFromExternalUrl) {
+        toastr.error("SillyTavern API changed: importFromExternalUrl is missing.", "Smart Import Error");
+        isSmartImporting = false;
+        return;
+    }
 
-                    const normTargetUrl = normalizeUrl(url);
-                    // UNIVERSAL DUPLICATE DETECTION
-                    const existingChar = characters.find(c => {
-                        const exts = c.data?.extensions || {};
+    const { characters, loader, importFromExternalUrl } = context;
 
-                        // GATHER IDENTIFICATION STRING
-                        const identifiers = [
-                            exts.source_url,
-                            exts.source,
-                            exts.chub?.full_path ? `chub.ai/characters/${exts.chub.full_path}` : '',
-                            exts.chub?.id,
-                            exts.pygmalion_id,
-                            exts.pygmalion?.id,
-                            exts.aicc,
-                            exts.aicc?.id,
-                            exts.perchance_data?.slug
-                        ].map(id => {
-                            // FILTER UNDEFINED/NON-STRING METADATA
-                            if (!id || typeof id !== 'string') return '';
-                            return normalizeUrl(id);
-                        }).filter(id => id !== '');
+    // STATE VARIABLES
+    let loaderHandle = null;
+    let isCancelled = false;
+    let popupObserver = null;
 
+    // ISOLATED EXECUTION BLOCK FOR SUCCESSFUL RELEASE
+    try {
+        // TACTILE UX BUTTON PAUSE
+        $targetBtn.text("Processing...").prop('disabled', true).css({ opacity: "0.5" });
+        // BUFFER TO ABSORB MOBILE GHOST CLICKS
+        await new Promise(resolve => setTimeout(resolve, 150));
+        // CLEAR INPUT AND CANCEL POPUP
+        $input.blur().val('');
 
-                        // BIDIRECTIONAL MATCHING
-                        let isMatch = identifiers.some(id => normTargetUrl.includes(id) || id.includes(normTargetUrl));
+        const cancelBtn = $popup.find('#dialogue_popup_cancel, .cancel_button, .cancel')[0];
+        if (cancelBtn) cancelBtn.click();
+        else if (typeof $popup[0].close === 'function') $popup[0].close();
+        else $popup.hide();
 
-                        // AICC HEURISTIC
-                        if (!isMatch && (normTargetUrl.includes('aicharactercards') || normTargetUrl.startsWith('aicc/'))) {
-                            const cleanName = c.name ? c.name.replace(/[^a-z0-9]/gi, '').toLowerCase() : '';
-                            const cleanUrl = normTargetUrl.replace(/[^a-z0-9]/gi, '');
-                            const isAiccCard = JSON.stringify(c).toLowerCase().includes('aicharactercards');
-                            if (cleanName.length > 3 && cleanUrl.includes(cleanName) && isAiccCard) {
-                                isMatch = true;
-                                console.log(`[Smart Import] AICC Match triggered for: ${c.name}`);
-                            }
-                        }
-                        return isMatch;
-                    });
+        // RALPH SACRIFICE TOASTR
+        toastr.warning("(chuckles) I'm in danger.", "Ralph", { timeOut: 131 });
+        // INITIAL PROCESSING TOASTR
+        if (urls.length > 1) {
+            toastr.info(`Processing ${urls.length} imports in the background...`, 'Smart Import');
+        } else {
+            toastr.info('Processing import...', 'Smart Import');
+        }
+        // READING BUFFER FOR PROCESSING
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        toastr.clear();
 
-                    // UPDATE EXISTING
-                    if (existingChar) {
-                        window.toastr.info(`Updating: ${existingChar.name}`, 'Smart Import');
-                        await utilsModule.importFromExternalUrl(url, { preserveFileName: existingChar.avatar });
-                        // ST NATIVE MESSAGE COOLDOWN
-                        await new Promise(resolve => setTimeout(resolve, 1500));
+        const charCache = buildCharacterCache(characters);
 
-                    // IMPORT NEW (OR LOREBOOK)
-                    } else {
-                        window.toastr.info(`Importing: ${url}`, 'Smart Import');
+        // LOREBOOK POPUP SLAYER
+        popupObserver = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                if (!mutation.addedNodes.length) continue;
 
-                        // LOREBOOK POPUP SLAYER
-                        const popupSlayer = setInterval(() => {
-                            // FIND LOREBOOK OVERWRITE POPUP
-                            const $diag = $('.popup, #dialogue_popup, dialog').filter(':visible');
-                            // IF FOUND WITH 'OVERWRITE'
-                            if ($diag.length && $diag.text().toLowerCase().includes('overwrite')) {
-                                // THEN FIND 'YES'-BUTTON
-                                const $yesBtn = $diag.find('*').filter(function() {
-                                    return $(this).text().trim().toLowerCase() === 'yes';
-                                });
-                                if ($yesBtn.length) {
-                                    // AUTOMATIC LOREBOOK OVERWRITE
-                                    if ($yesBtn[0]) $yesBtn[0].click();
-                                    $yesBtn.trigger('click');
-                                    console.log("[Smart Import] Assassinated Lorebook Popup!");
-                                    clearInterval(popupSlayer);
-                                }
-                            }
-                        }, 10);
+                const $newNodes = $(mutation.addedNodes);
+                // FIND VISIBLE DIALOG
+                const $diag = $newNodes.find('.popup, #dialogue_popup, dialog').addBack('.popup, #dialogue_popup, dialog').filter(':visible');
 
-                        try {
-                            // EXECUTE ST NATIVE IMPORT
-                            await utilsModule.importFromExternalUrl(url);
-                        } finally {
-                            // POPUP SLAYER SAFEGUARD
-                            clearInterval(popupSlayer);
-                        }
-                        // ST NATIVE MESSAGE COOLDOWN
-                        await new Promise(resolve => setTimeout(resolve, 1500));
-                    }
+                // CONFIRM DIALOG CHECK
+                const $okBtn = $diag.find('.popup-button-ok, #dialogue_popup_ok');
 
-                // SINGLE IMPORT FALLBACK
-                } catch (err) {
-                    console.error(`[Smart Import] Failed on: ${url}`, err);
-                    window.toastr.error(`Import failed: ${url}`, 'Smart Import Error');
-                    await new Promise(resolve => setTimeout(resolve, 1500));
+                if ($diag.length && $okBtn.length) {
+                    // NATIVE CLICK TRIGGER
+                    $okBtn[0].click();
+                    return;
                 }
             }
+        });
 
-            // IMPORT BATCH SUCCESS
-            window.toastr.success('Smart Import completed!', 'Smart Import');
+        popupObserver.observe(document.body, { childList: true, subtree: true });
 
-        // FATAL LOOP ERROR
-        } catch (err) {
-            console.error("[Smart Import] Fatal error:", err);
-            window.toastr.error('An error occurred. Check console.', 'Smart Import');
+        const totalUrls = urls.length;
 
-        } finally {
-            // RELEASE LOCK
-            isSmartImporting = false;
-            // RESTORE BUTTON STATE
-            $targetBtn.text('Smart Import');
-            $targetBtn.prop('disabled', false).css({ opacity: "1" });
+        // MAIN IMPORT LOOP
+        for (let i = 0; i < totalUrls; i++) {
+            // STOP BUTTON PRESS CHECK
+            if (isCancelled) {
+                console.log(`[${MODULE_NAME}] Import loop manually aborted by user.`);
+                break;
+            }
+
+            // ASSASSINATE ALL ACCIDENTAL SPACES
+            let url = urls[i].replace(/\s+/g, '');
+
+            const step = `${i + 1}/${totalUrls}`;
+
+            try {
+                // DEFINE FINAL LOWERCASE URL
+                let lowerUrl = url.toLowerCase();
+
+                // UNSUPPORTED DUPLICATE CHECKER
+                if (lowerUrl.includes('.png')) {
+                    console.warn(`[${MODULE_NAME}] Skipped PNG to prevent blind duplication: ${url}`);
+                    toastr.warning(`PNGs cannot be duplicate-checked. Deactivate Smart Import to batch-import PNGs natively.`, 'Smart Import Blocked', { timeOut: 5000 });
+                    continue;
+                }
+
+                // BROKEN APIs FIREWALL
+                if (lowerUrl.includes('janitorai.com') || lowerUrl.includes('_character-') || lowerUrl.includes('realm.risuai.net')) {
+                    console.warn(`[${MODULE_NAME}] Skipped unsupported source: ${url}`);
+                    const displayUrl = url.length > 30 ? url.substring(0, 30) + '...' : url;
+                    toastr.warning(`Native import fails on this. Skipped to prevent errors: ${displayUrl}`, 'Smart Import Blocked', { timeOut: 5000 });
+                    continue;
+                }
+
+                // STRIP TRACKING PARAMETERS FOR CHUB
+                if (lowerUrl.includes('chub.ai') && url.includes('?')) {
+                    url = url.split('?')[0];
+                    lowerUrl = url.toLowerCase();
+                }
+
+                // CHUB LOREBOOK SHORT-ID FIX
+                if (lowerUrl.startsWith('lorebooks/')) {
+                    url = `https://chub.ai/${url}`;
+                }
+
+                // PERCHANCE UUID+.gz FIX
+                if (lowerUrl.endsWith('.gz') && !lowerUrl.includes('/')) {
+                    url = `https://perchance.org/ai-character-chat?data=${url}`;
+                    console.log(`[${MODULE_NAME}] Expanded Perchance UUID to direct link: ${url}`);
+                }
+
+                const normTargetUrl = normalizeUrl(url);
+                const cleanTargetUrl = normTargetUrl.replace(REGEX_NON_ALPHANUMERIC, '');
+
+                // BIDIRECTIONAL MATCHING
+                const existingCacheItem = charCache.find(c => {
+                    let isMatch = c.identifiers.some(normId =>
+                        normTargetUrl.includes(normId) || normId.includes(normTargetUrl)
+                    );
+
+                    // AICC HEURISTIC
+                    if (!isMatch && (normTargetUrl.includes('aicharactercards') || normTargetUrl.startsWith('aicc/'))) {
+                        if (c.cleanName.length > 2 && cleanTargetUrl.includes(c.cleanName) && c.isAiccCard) {
+                            isMatch = true;
+                        }
+                    }
+
+                    return isMatch;
+                });
+
+                const existingChar = existingCacheItem ? existingCacheItem.original : null;
+
+                // CLEAR LOADER
+                if (loaderHandle) {
+                    loaderHandle.hide().catch(() => {});
+                }
+                const actionText = existingChar
+                    ? `Updating: ${existingChar.name}`
+                    : `Importing: ${url}`;
+                // SPAWN DYNAMIC LOADER
+                loaderHandle = loader.show({
+                    blocking: false,
+                    title: 'Smart Import',
+                    message: `[${step}] ${actionText}`,
+                    onStop: () => { isCancelled = true; }
+                });
+
+                // UPDATE EXISTING METADATA
+                if (existingChar) {
+                    await importFromExternalUrl(url, { preserveFileName: existingChar.avatar });
+                // NEW IMPORT
+                } else {
+                    await importFromExternalUrl(url);
+                }
+                // RATE LIMITING DELAY
+                await new Promise(resolve => setTimeout(resolve, settings.delayMs));
+
+            // SINGLE IMPORT ERROR FALLBACK
+            } catch (err) {
+                console.error(`[${MODULE_NAME}] Failed on: ${url}`, err);
+                toastr.error(`[${step}] Import failed: ${url}`, 'Smart Import Error');
+            }
         }
-    }, true);
-});
+
+    // FATAL LOOP ERROR
+    } catch (err) {
+        console.error(`[${MODULE_NAME}] Fatal error:`, err);
+        toastr.error('An error occurred. Check console.', 'Smart Import');
+    } finally {
+        // CLEANUP POPUP OBSERVER
+        if (popupObserver) {
+            popupObserver.disconnect();
+        }
+        // RELEASE LOCK
+        isSmartImporting = false;
+        // RESTORE BUTTON STATE
+        $targetBtn.text('Smart Import').prop('disabled', false).css({ opacity: "1" });
+        // CLEANUP LOADER
+        if (loaderHandle) {
+            loaderHandle.hide().catch(() => {});
+        }
+
+        // IMPORT BATCH FINISHED
+        if (isCancelled) {
+            toastr.warning('Smart Import cancelled.', 'Smart Import');
+        } else {
+            toastr.success('Smart Import completed!', 'Smart Import');
+        }
+    }
+}

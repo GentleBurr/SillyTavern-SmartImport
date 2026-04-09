@@ -1,11 +1,15 @@
 {
-  "display_name": "Smart External Import",
+  "display_name": "Smart Import",
   "loading_order": 10,
   "js": "index.js",
   "css": "style.css",
   "author": "GentleBurr",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "homePage": "https://github.com/GentleBurr/SillyTavern-SmartImport",
   "auto_update": true,
-  "minimum_client_version": "1.16.0"
+  "minimum_client_version": "1.16.0",
+  "hooks": { 
+    "activate": "onActivate",
+    "disable": "onDisable"
+  }
 }
