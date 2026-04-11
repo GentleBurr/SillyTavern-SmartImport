@@ -4,20 +4,37 @@
             <b>Smart Import</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
+
         <div class="inline-drawer-content">
             <div class="flex-container alignitemscenter margin-b-10">
                 <label class="checkbox_label" for="smart_import_enabled">
                     <input id="smart_import_enabled" type="checkbox" {{#if enabled}}checked{{/if}} />
-                    <span>Enable Dupe Checker & Updater</span>
+                    Enable Dupe Checker & Updater
                 </label>
             </div>
             
-            <div class="flex-container alignitemscenter justify-space-between">
-                <input id="smart_import_delay" class="text_pole" type="number" min="0" max="5000" value="{{delayMs}}" style="width: 69px;" required />
-                <label for="smart_import_delay">
-                    <span>ms Import Delay</span>
-                    <small>Buffer between imports to prevent rate-limiting.</small>
+            <div class="flex-container alignitemscenter justify-space-between margin-b-10">
+                <input id="smart_import_delay" class="text_pole" type="number" min="0" max="5000" value="{{delayMs}}" style="width: 60px;" required />
+                <label for="smart_import_delay" title="Buffer in ms to prevent rate-limiting.">
+                    ms Import Delay
+                    <span class="margin5 fa-solid fa-circle-info opacity50p"></span>
                 </label>
+            </div>
+
+            <hr class="sysHR" />
+
+            <div class="flex-container alignitemscenter margin-b-10">
+                <label class="checkbox_label" for="smart_import_auto_tag">
+                    <input id="smart_import_auto_tag" type="checkbox" {{#if autoTag}}checked{{/if}} />
+                    Auto-Tag Creators (e.g., @CreatorName)
+                </label>
+            </div>
+
+            <div class="flex-container alignitemscenter justify-space-between margin-top-10">
+                <div id="smart_import_retro_tag" class="menu_button">
+                    <i class="fa-solid fa-tags" style="margin-right: 10px"></i>
+                    Retroactively Tag Existing Characters
+                </div>
             </div>
         </div>
     </div>

@@ -24,6 +24,7 @@ let isSmartImporting = false;
 // DEFAULT SETTINGS
 const defaultSettings = Object.freeze({
     enabled: true,
+    autoTag: false, // NEW: Default OFF
     delayMs: 500
 });
 
@@ -61,6 +62,24 @@ async function renderSettings() {
         updateVisualState(settings.enabled);
     });
 
+    // AUTO-TAG LISTENER
+    $('#smart_import_auto_tag').on('change', function () {
+        settings.autoTag = !!$(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    // RETROACTIVE TAGGING BUTTON
+    $('#smart_import_retro_tag').on('click', async function () {
+        const confirm = await SillyTavern.getContext().callGenericPopup(
+            "This will scan your entire roster and add '@CreatorName' tags where missing based on metadata.<br><br><b>Note:</b> You will need to refresh the page (F5) afterward to see the new tags.<br><br>Continue?",
+            { confirm: true, title: "Retroactive Creator Tagging" }
+        );
+
+        if (confirm) {
+            runRetroactiveTagging();
+        }
+    });
+
     // DELAY INPUT LISTENER
     $('#smart_import_delay').on('input', function () {
         let val = parseInt($(this).val());
@@ -83,6 +102,91 @@ async function renderSettings() {
         settings.delayMs = val;
         saveSettingsDebounced();
     });
+}
+
+// TAGGING LOGIC
+function applyCreatorTag(character) {
+    if (!character || !character.data || !character.avatar) return { tagCreated: false, charMapped: false };
+
+    const exts = character.data.extensions || {};
+    const creatorName = exts.chub?.full_path?.split('/')[0] || character.data.creator;
+
+    if (!creatorName || typeof creatorName !== 'string') return { tagCreated: false, charMapped: false };
+
+    const tagName = `@${creatorName.trim()}`;
+
+    const context = SillyTavern.getContext();
+    const stTags = context.tags || window.tags;
+    const stTagMap = context.tagMap || context.tag_map || window.tagMap || window.tag_map;
+
+    if (!stTags || !stTagMap) return { tagCreated: false, charMapped: false };
+
+    let tagCreated = false;
+    let charMapped = false;
+
+    // 1. FIND/CREATE MASTER TAG
+    let tagObj = stTags.find(t => t.name.toLowerCase() === tagName.toLowerCase());
+    if (!tagObj) {
+        const newId = typeof crypto !== 'undefined' && crypto.randomUUID 
+            ? crypto.randomUUID() 
+            : Date.now().toString();
+
+        tagObj = {
+            id: newId,
+            name: tagName,
+            folder_type: "NONE",
+            color: "default"
+        };
+        stTags.push(tagObj);
+        tagCreated = true;
+    }
+
+    // 2. MAP TO BACKEND DATABASE
+    if (!stTagMap[character.avatar]) {
+        stTagMap[character.avatar] = [];
+    }
+    if (!stTagMap[character.avatar].includes(tagObj.id)) {
+        stTagMap[character.avatar].push(tagObj.id);
+        charMapped = true;
+    }
+
+    // 3. HEAL FRONTEND MEMORY
+    if (!character.tags) character.tags = [];
+    if (!character.tags.includes(tagObj.id) && !character.tags.includes(tagObj.name)) {
+        character.tags.push(tagObj.id);
+    }
+
+    return { tagCreated, charMapped };
+}
+
+// RETROACTIVE LOOP
+async function runRetroactiveTagging() {
+    const { characters, loader, saveSettingsDebounced } = SillyTavern.getContext();
+    const handle = loader.show({ message: "Tagging roster..." });
+    
+    let totalTagsCreated = 0;
+    let totalCharsMapped = 0;
+
+    try {
+        for (const char of characters) {
+            const result = applyCreatorTag(char);
+            if (result.tagCreated) totalTagsCreated++;
+            if (result.charMapped) totalCharsMapped++;
+        }
+        
+        if (totalTagsCreated > 0 || totalCharsMapped > 0) {
+            saveSettingsDebounced();
+            
+            toastr.success(
+                `Created ${totalTagsCreated} new master tags and mapped ${totalCharsMapped} characters!`, 
+                "Smart Import"
+            );
+        } else {
+            toastr.info("No missing creator tags found.", "Smart Import");
+        }
+    } finally {
+        handle.hide();
+    }
 }
 
 // EXTENSION ACTIVATION HOOK
@@ -348,6 +452,21 @@ async function handleSmartImportClick(e) {
                 } else {
                     await importFromExternalUrl(url);
                 }
+
+                // AUTO-TAGGING INJECTION HOOK
+                if (settings.autoTag) {
+                    const freshChars = SillyTavern.getContext().characters;
+                    const freshCache = buildCharacterCache(freshChars);
+                    const targetChar = freshCache.find(c => c.identifiers.some(id => normTargetUrl.includes(id) || id.includes(normTargetUrl)))?.original;
+                    
+                    if (targetChar) {
+                        const result = applyCreatorTag(targetChar);
+                        if (result.tagCreated || result.charMapped) {
+                            SillyTavern.getContext().saveSettingsDebounced();
+                        }
+                    }
+                }
+
                 // RATE LIMITING DELAY
                 await new Promise(resolve => setTimeout(resolve, settings.delayMs));
 
