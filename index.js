@@ -13,9 +13,7 @@ const REGEX_NON_ALPHANUMERIC = /[^a-z0-9]/gi;
 // INPUT NORMALIZER
 const normalizeUrl = (urlStr) => {
     // STRIP PROTOCOL, WWW, AND TRAILING SLASHES
-    return typeof urlStr === 'string'
-        ? urlStr.replace(REGEX_PROTOCOL, '').replace(REGEX_WWW, '').replace(REGEX_TRAILING_SLASH, '').toLowerCase()
-        : '';
+    return typeof urlStr === 'string' ? urlStr.replace(REGEX_PROTOCOL, '').replace(REGEX_WWW, '').replace(REGEX_TRAILING_SLASH, '').toLowerCase() : '';
 };
 
 // GLOBAL STATE
@@ -24,8 +22,10 @@ let isSmartImporting = false;
 // DEFAULT SETTINGS
 const defaultSettings = Object.freeze({
     enabled: true,
-    autoTag: false, // NEW: Default OFF
-    delayMs: 500
+    delayMs: 500,
+    autoTag: true,
+    tagColor: '',
+    tagColor2: ''
 });
 
 // LOAD PERSISTENT SETTINGS
@@ -68,6 +68,41 @@ async function renderSettings() {
         saveSettingsDebounced();
     });
 
+    // INSTANTIATE COLOR PICKER COMPONENTS
+    const $pickerBg = $('<toolcool-color-picker></toolcool-color-picker>').attr('id', 'smart_import_tag_color');
+    const $pickerText = $('<toolcool-color-picker></toolcool-color-picker>').attr('id', 'smart_import_tag_color2');
+
+    // INJECT INTO CONTAINER
+    $('#smart_import_bg_container').append($pickerBg);
+    $('#smart_import_text_container').append($pickerText);
+
+    // COLOR INITIALIZATION
+    $pickerBg[0].color = settings.tagColor || 'rgba(0, 0, 0, 0.5)';
+    $pickerText[0].color = settings.tagColor2 || 'rgba(255, 255, 255, 1)';
+
+    // BIND LISTENERS
+    $pickerBg.on('change', function (evt) {
+        const rgba = evt.originalEvent ? evt.originalEvent.detail.rgba : evt.detail.rgba;
+        settings.tagColor = rgba;
+        saveSettingsDebounced();
+    });
+    $pickerText.on('change', function (evt) {
+        const rgba = evt.originalEvent ? evt.originalEvent.detail.rgba : evt.detail.rgba;
+        settings.tagColor2 = rgba;
+        saveSettingsDebounced();
+    });
+
+    // COLOR RESET BUTTON LOGIC
+    $('#smart_import_reset_colors').on('click', function () {
+        settings.tagColor = '';
+        settings.tagColor2 = '';
+        saveSettingsDebounced();
+
+        if ($pickerBg.length) $pickerBg[0].color = 'rgba(0, 0, 0, 0.5)';
+        if ($pickerText.length) $pickerText[0].color = 'rgba(255, 255, 255, 1)';
+        toastr.info("New auto-tags will use ST's dynamic theme colors.", "Smart Import");
+    });
+
     // RETROACTIVE TAGGING BUTTON
     $('#smart_import_retro_tag').on('click', async function () {
         const confirm = await SillyTavern.getContext().callGenericPopup(
@@ -106,42 +141,62 @@ async function renderSettings() {
 
 // TAGGING LOGIC
 function applyCreatorTag(character) {
-    if (!character || !character.data || !character.avatar) return { tagCreated: false, charMapped: false };
+    if (!character || !character.data || !character.avatar) return { tagCreated: false, charMapped: false, colorUpdated: false };
 
+    // EXTRACT CREATOR NAME FROM METADATA
     const exts = character.data.extensions || {};
     const creatorName = exts.chub?.full_path?.split('/')[0] || character.data.creator;
 
-    if (!creatorName || typeof creatorName !== 'string') return { tagCreated: false, charMapped: false };
+    if (!creatorName || typeof creatorName !== 'string') return { tagCreated: false, charMapped: false, colorUpdated: false };
 
     const tagName = `@${creatorName.trim()}`;
 
+    // ACCESS NATIVE SILLYTAVERN DATABASES
     const context = SillyTavern.getContext();
     const stTags = context.tags || window.tags;
     const stTagMap = context.tagMap || context.tag_map || window.tagMap || window.tag_map;
 
-    if (!stTags || !stTagMap) return { tagCreated: false, charMapped: false };
+    if (!stTags || !stTagMap) return { tagCreated: false, charMapped: false, colorUpdated: false };
 
     let tagCreated = false;
     let charMapped = false;
+    let colorUpdated = false;
+    const settings = getSettings();
 
-    // 1. FIND/CREATE MASTER TAG
+    // FIND OR CREATE MASTER TAG
     let tagObj = stTags.find(t => t.name.toLowerCase() === tagName.toLowerCase());
+
     if (!tagObj) {
-        const newId = typeof crypto !== 'undefined' && crypto.randomUUID 
-            ? crypto.randomUUID() 
-            : Date.now().toString();
+        const newId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString();
+        // CALCULATE NATIVE SORT ORDER
+        const nextSortOrder = stTags.length > 0 ? Math.max(0, ...stTags.map(t => t.sort_order || 0)) + 1 : 1;
 
         tagObj = {
             id: newId,
             name: tagName,
             folder_type: "NONE",
-            color: "default"
+            filter_state: "UNDEFINED",
+            sort_order: nextSortOrder,
+            is_hidden_on_character_card: false,
+            color: settings.tagColor || '',
+            color2: settings.tagColor2 || '',
+            create_date: Date.now()
         };
         stTags.push(tagObj);
         tagCreated = true;
+    } else {
+        // APPLY OR OVERWRITE CUSTOM COLORS ON EXISTING TAGS
+        const desiredBg = settings.tagColor || '';
+        const desiredText = settings.tagColor2 || '';
+
+        if (tagObj.color !== desiredBg || tagObj.color2 !== desiredText) {
+            tagObj.color = desiredBg;
+            tagObj.color2 = desiredText;
+            colorUpdated = true;
+        }
     }
 
-    // 2. MAP TO BACKEND DATABASE
+    // MAP TO CHARACTER BACKEND DATABASE
     if (!stTagMap[character.avatar]) {
         stTagMap[character.avatar] = [];
     }
@@ -150,39 +205,47 @@ function applyCreatorTag(character) {
         charMapped = true;
     }
 
-    // 3. HEAL FRONTEND MEMORY
+    // HEAL FRONTEND MEMORY ARRAY
     if (!character.tags) character.tags = [];
     if (!character.tags.includes(tagObj.id) && !character.tags.includes(tagObj.name)) {
         character.tags.push(tagObj.id);
     }
 
-    return { tagCreated, charMapped };
+    return { tagCreated, charMapped, colorUpdated };
 }
 
 // RETROACTIVE LOOP
 async function runRetroactiveTagging() {
     const { characters, loader, saveSettingsDebounced } = SillyTavern.getContext();
     const handle = loader.show({ message: "Tagging roster..." });
-    
+
     let totalTagsCreated = 0;
     let totalCharsMapped = 0;
+    let totalColorsUpdated = 0;
 
     try {
         for (const char of characters) {
             const result = applyCreatorTag(char);
             if (result.tagCreated) totalTagsCreated++;
             if (result.charMapped) totalCharsMapped++;
+            if (result.colorUpdated) totalColorsUpdated++;
         }
-        
-        if (totalTagsCreated > 0 || totalCharsMapped > 0) {
+
+        if (totalTagsCreated > 0 || totalCharsMapped > 0 || totalColorsUpdated > 0) {
             saveSettingsDebounced();
-            
+
+            // COLOR DATABASE UPDATE
+            const { eventSource, event_types } = SillyTavern.getContext();
+            if (eventSource && event_types && event_types.SETTINGS_UPDATED) {
+                eventSource.emit(event_types.SETTINGS_UPDATED);
+            }
+
             toastr.success(
-                `Created ${totalTagsCreated} new master tags and mapped ${totalCharsMapped} characters!`, 
+                `Created ${totalTagsCreated} tags, mapped ${totalCharsMapped} chars, and synced colors for ${totalColorsUpdated} tags!`,
                 "Smart Import"
             );
         } else {
-            toastr.info("No missing creator tags found.", "Smart Import");
+            toastr.info("All creator tags and colors are already up to date.", "Smart Import");
         }
     } finally {
         handle.hide();
@@ -192,22 +255,20 @@ async function runRetroactiveTagging() {
 // EXTENSION ACTIVATION HOOK
 export async function onActivate() {
     loadSettings();
-
     await renderSettings();
-
     updateVisualState(getSettings().enabled);
 
     // DYNAMIC BUTTON RENAMING
-    $(document).on('click.smartImportRename', '#external_import_button, .external_import_button', function() {
+    $(document).on('click.smartImportRename', '#external_import_button, .external_import_button', function () {
         if (!getSettings().enabled) return;
 
         // DELAY TO LET DOM RENDER
         setTimeout(() => {
             const $popup = $('.popup, #dialogue_popup, dialog').filter(':visible');
-            const $importBtn = $popup.find('#dialogue_popup_ok, button, .menu_button').filter(function() {
-                return $(this).text().trim().toLowerCase() === 'import';
-            });
-            if ($importBtn.length) $importBtn.text('Smart Import');
+            const $importBtn = $popup.find('#dialogue_popup_ok, .popup-button-ok');
+            if ($importBtn.length) {
+                $importBtn.addClass('smart_import_hijacked_btn').text('Smart Import');
+            }
         }, 100);
     });
 
@@ -257,14 +318,16 @@ async function handleSmartImportClick(e) {
     if (!settings.enabled) return;
 
     // FIND TARGET BUTTON
-    const $targetBtn = $(e.target).closest('button, .menu_button, #dialogue_popup_ok');
+    const $targetBtn = $(e.target).closest('button, .menu_button, #dialogue_popup_ok, .popup-button-ok');
     if (!$targetBtn.length) return;
     // NORMALIZE BUTTON TEXT
     const currentText = $targetBtn.text().trim().toLowerCase();
+    // TARGET BUTTON-CLASS OR PROCESSING STATE
+    if (!$targetBtn.hasClass('smart_import_hijacked_btn') && $targetBtn.text().trim().toLowerCase() !== 'processing...') return;
     // IGNORE UNRELATED BUTTONS
     if (currentText !== 'smart import' && currentText !== 'processing...') return;
 
-    // DOUBLE-LOCK GUARD
+    // DOUBLE-LOCK GUARD AGAINST SPAM CLICKS
     if (isSmartImporting || currentText === 'processing...') {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -281,9 +344,8 @@ async function handleSmartImportClick(e) {
 
     if (typeof inputVal !== 'string' || inputVal.trim() === '') return;
 
+    // EXTRACT AND SANITIZE INPUT URLS
     const { DOMPurify } = SillyTavern.libs;
-
-    // SPLIT AND SANITIZE URLS
     const cleanInput = DOMPurify.sanitize(inputVal);
     const urls = cleanInput.split(/\r?\n/).map(u => u.trim()).filter(Boolean);
 
@@ -301,9 +363,8 @@ async function handleSmartImportClick(e) {
         return;
     }
 
-    const { characters, loader, importFromExternalUrl } = context;
-
     // STATE VARIABLES
+    const { characters, loader, importFromExternalUrl } = context;
     let loaderHandle = null;
     let isCancelled = false;
     let popupObserver = null;
@@ -312,11 +373,10 @@ async function handleSmartImportClick(e) {
     try {
         // TACTILE UX BUTTON PAUSE
         $targetBtn.text("Processing...").prop('disabled', true).css({ opacity: "0.5" });
-        // BUFFER TO ABSORB MOBILE GHOST CLICKS
         await new Promise(resolve => setTimeout(resolve, 150));
+
         // CLEAR INPUT AND CANCEL POPUP
         $input.blur().val('');
-
         const cancelBtn = $popup.find('#dialogue_popup_cancel, .cancel_button, .cancel')[0];
         if (cancelBtn) cancelBtn.click();
         else if (typeof $popup[0].close === 'function') $popup[0].close();
@@ -377,14 +437,14 @@ async function handleSmartImportClick(e) {
                 // DEFINE FINAL LOWERCASE URL
                 let lowerUrl = url.toLowerCase();
 
-                // UNSUPPORTED DUPLICATE CHECKER
+                // UNSUPPORTED DUPLICATE CHECKER GUARD FOR PNGS
                 if (lowerUrl.includes('.png')) {
                     console.warn(`[${MODULE_NAME}] Skipped PNG to prevent blind duplication: ${url}`);
                     toastr.warning(`PNGs cannot be duplicate-checked. Deactivate Smart Import to batch-import PNGs natively.`, 'Smart Import Blocked', { timeOut: 5000 });
                     continue;
                 }
 
-                // BROKEN APIs FIREWALL
+                // BROKEN APIS FIREWALL
                 if (lowerUrl.includes('janitorai.com') || lowerUrl.includes('_character-') || lowerUrl.includes('realm.risuai.net')) {
                     console.warn(`[${MODULE_NAME}] Skipped unsupported source: ${url}`);
                     const displayUrl = url.length > 30 ? url.substring(0, 30) + '...' : url;
@@ -430,14 +490,23 @@ async function handleSmartImportClick(e) {
 
                 const existingChar = existingCacheItem ? existingCacheItem.original : null;
 
+                // PRESERVE CACHE
+                const stTagMap = context.tagMap || context.tag_map || window.tagMap || window.tag_map;
+                let preservedTags = [];
+                if (existingChar && stTagMap && stTagMap[existingChar.avatar]) {
+                    preservedTags = [...stTagMap[existingChar.avatar]];
+                }
+
                 // CLEAR LOADER
                 if (loaderHandle) {
-                    loaderHandle.hide().catch(() => {});
+                    loaderHandle.hide().catch(() => { });
                 }
-                const actionText = existingChar
-                    ? `Updating: ${existingChar.name}`
-                    : `Importing: ${url}`;
-                // SPAWN DYNAMIC LOADER
+
+                // TRUNCATE HUGE URLS TO PREVENT UI STRETCHING
+                const displayUrl = url.length > 35 ? url.substring(0, 35) + '...' : url;
+
+                // SPAWN DYNAMIC ACTION LOADER 
+                const actionText = existingChar ? `Updating: ${existingChar.name}` : `Importing: ${displayUrl}`;
                 loaderHandle = loader.show({
                     blocking: false,
                     title: 'Smart Import',
@@ -445,24 +514,68 @@ async function handleSmartImportClick(e) {
                     onStop: () => { isCancelled = true; }
                 });
 
-                // UPDATE EXISTING METADATA
                 if (existingChar) {
+                    // UPDATE EXISTING METADATA
                     await importFromExternalUrl(url, { preserveFileName: existingChar.avatar });
-                // NEW IMPORT
                 } else {
+                    // NEW IMPORT
                     await importFromExternalUrl(url);
                 }
 
-                // AUTO-TAGGING INJECTION HOOK
-                if (settings.autoTag) {
-                    const freshChars = SillyTavern.getContext().characters;
-                    const freshCache = buildCharacterCache(freshChars);
-                    const targetChar = freshCache.find(c => c.identifiers.some(id => normTargetUrl.includes(id) || id.includes(normTargetUrl)))?.original;
-                    
-                    if (targetChar) {
+                // RESTORE THE PRESERVED TAGS & APPLY NEW ONES
+                const freshChars = SillyTavern.getContext().characters;
+                const freshCache = buildCharacterCache(freshChars);
+
+                // FIND RECREATED CHAR
+                const targetCharItem = freshCache.find(c => {
+                    let isMatch = c.identifiers.some(normId =>
+                        normTargetUrl.includes(normId) || normId.includes(normTargetUrl)
+                    );
+                    if (!isMatch && (normTargetUrl.includes('aicharactercards') || normTargetUrl.startsWith('aicc/'))) {
+                        if (c.cleanName.length > 2 && cleanTargetUrl.includes(c.cleanName) && c.isAiccCard) {
+                            isMatch = true;
+                        }
+                    }
+                    return isMatch;
+                });
+
+                const targetChar = targetCharItem ? targetCharItem.original : null;
+
+                if (targetChar) {
+                    let tagsModified = false;
+
+                    // RESTORE OLD TAGS
+                    if (preservedTags.length > 0 && stTagMap) {
+                        if (!stTagMap[targetChar.avatar]) stTagMap[targetChar.avatar] = [];
+
+                        preservedTags.forEach(tagId => {
+                            if (!stTagMap[targetChar.avatar].includes(tagId)) {
+                                stTagMap[targetChar.avatar].push(tagId);
+                                tagsModified = true;
+                            }
+                            if (!targetChar.tags) targetChar.tags = [];
+                            if (!targetChar.tags.includes(tagId)) {
+                                targetChar.tags.push(tagId);
+                            }
+                        });
+                    }
+
+                    // APPLY 'CREATOR' AUTO-TAG
+                    if (settings.autoTag) {
                         const result = applyCreatorTag(targetChar);
-                        if (result.tagCreated || result.charMapped) {
-                            SillyTavern.getContext().saveSettingsDebounced();
+                        if (result.tagCreated || result.charMapped || result.colorUpdated) {
+                            tagsModified = true;
+                        }
+                    }
+
+                    // COMMIT TO DATABASE
+                    if (tagsModified) {
+                        SillyTavern.getContext().saveSettingsDebounced();
+
+                        // UPDATE DATABASE STATE
+                        const { eventSource, event_types } = SillyTavern.getContext();
+                        if (eventSource && event_types && event_types.SETTINGS_UPDATED) {
+                            eventSource.emit(event_types.SETTINGS_UPDATED);
                         }
                     }
                 }
@@ -470,15 +583,15 @@ async function handleSmartImportClick(e) {
                 // RATE LIMITING DELAY
                 await new Promise(resolve => setTimeout(resolve, settings.delayMs));
 
-            // SINGLE IMPORT ERROR FALLBACK
             } catch (err) {
+                // SINGLE IMPORT ERROR FALLBACK
                 console.error(`[${MODULE_NAME}] Failed on: ${url}`, err);
                 toastr.error(`[${step}] Import failed: ${url}`, 'Smart Import Error');
             }
         }
 
-    // FATAL LOOP ERROR
     } catch (err) {
+        // FATAL LOOP ERROR
         console.error(`[${MODULE_NAME}] Fatal error:`, err);
         toastr.error('An error occurred. Check console.', 'Smart Import');
     } finally {
@@ -492,7 +605,7 @@ async function handleSmartImportClick(e) {
         $targetBtn.text('Smart Import').prop('disabled', false).css({ opacity: "1" });
         // CLEANUP LOADER
         if (loaderHandle) {
-            loaderHandle.hide().catch(() => {});
+            loaderHandle.hide().catch(() => { });
         }
 
         // IMPORT BATCH FINISHED

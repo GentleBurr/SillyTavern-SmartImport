@@ -1,6 +1,6 @@
 /* SillyTavern-SmartImport/style.css */
 
-body.smart-import-active #external_import_button, 
+body.smart-import-active #external_import_button,
 body.smart-import-active .external_import_button {
     background-color: var(--SmartThemeBotColor, #1a73e8) !important;
     color: var(--SmartThemeBotTxtColor, #ffffff) !important;

@@ -12,8 +12,8 @@
                     Enable Dupe Checker & Updater
                 </label>
             </div>
-            
-            <div class="flex-container alignitemscenter justify-space-between margin-b-10">
+
+            <div class="flex-container alignitemscenter justify-space-between margin-b-10" style="padding-left: 40px;">
                 <input id="smart_import_delay" class="text_pole" type="number" min="0" max="5000" value="{{delayMs}}" style="width: 60px;" required />
                 <label for="smart_import_delay" title="Buffer in ms to prevent rate-limiting.">
                     ms Import Delay
@@ -30,12 +30,25 @@
                 </label>
             </div>
 
-            <div class="flex-container alignitemscenter justify-space-between margin-top-10">
+            <div class="flex-container alignitemscenter justify-space-between margin-top-10" style="padding-left: 40px;">
                 <div id="smart_import_retro_tag" class="menu_button">
                     <i class="fa-solid fa-tags" style="margin-right: 10px"></i>
                     Retroactively Tag Existing Characters
                 </div>
             </div>
+
+            <div class="flex-container alignitemscenter justify-space-between margin-b-10" style="padding-left: 40px; font-size: 0.9em; opacity: 0.9;">
+                <span class="margin-r-10">Tag BG:</span>
+                <div id="smart_import_bg_container"></div>
+
+                <span class="margin-r-10 margin-l-10">Text:</span>
+                <div id="smart_import_text_container"></div>
+
+                <div id="smart_import_reset_colors" class="menu_button margin-l-10" title="Reset to dynamic theme defaults" style="padding: 4px 8px;">
+                    <i class="fa-solid fa-undo"></i>
+                </div>
+            </div>
+
         </div>
     </div>
 </div>

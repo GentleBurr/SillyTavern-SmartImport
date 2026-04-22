@@ -8,7 +8,7 @@
   "homePage": "https://github.com/GentleBurr/SillyTavern-SmartImport",
   "auto_update": true,
   "minimum_client_version": "1.16.0",
-  "hooks": { 
+  "hooks": {
     "activate": "onActivate",
     "disable": "onDisable"
   }
